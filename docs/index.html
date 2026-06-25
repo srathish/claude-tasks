@@ -42,6 +42,18 @@
     <label for="desc">What should Claude do?</label>
     <textarea id="desc" placeholder="Describe the project. Be specific: language, features, anything Claude should know."></textarea>
 
+    <label style="display:flex; align-items:center; gap:10px; font-weight:400; margin-bottom:10px; cursor:pointer;">
+      <input type="checkbox" id="publish" checked style="width:auto; margin:0; transform:scale(1.3);">
+      <span>Publish to GitHub when done</span>
+    </label>
+    <div id="visRow" style="margin-bottom:14px;">
+      <label for="visibility">Repo visibility</label>
+      <select id="visibility" style="width:100%; background:#0d1117; border:1px solid var(--border); border-radius:10px; color:var(--text); padding:12px; font-size:16px;">
+        <option value="public">Public</option>
+        <option value="private">Private</option>
+      </select>
+    </div>
+
     <button id="send" class="btn-primary">Send to laptop</button>
     <div id="status"></div>
   </div>
@@ -170,6 +182,11 @@
     } catch (err) { show("Delete error: " + err.message, "err"); }
   };
 
+  // Hide visibility picker when not publishing
+  $("publish").addEventListener("change", () => {
+    $("visRow").style.display = $("publish").checked ? "block" : "none";
+  });
+
   $("refresh").addEventListener("click", loadRecent);
   loadRecent();
   setInterval(loadRecent, 15000);  // auto-refresh so statuses update live
@@ -185,7 +202,8 @@
     const now = new Date();
     const stamp = now.toISOString().slice(0,19).replace(/[:T]/g, "-");
     const path = `tasks/${stamp}-${slugify(title)}.json`;
-    const payload = { title, description: desc, created: now.toISOString(), status: "pending" };
+    const payload = { title, description: desc, created: now.toISOString(), status: "pending",
+                      publish: $("publish").checked, visibility: $("visibility").value };
     const content = b64(JSON.stringify(payload, null, 2));
 
     $("send").disabled = true;

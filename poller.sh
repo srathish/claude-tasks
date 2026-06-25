@@ -35,6 +35,9 @@ for f in tasks/*.json; do
 
   title="$(/usr/bin/python3 -c "import json; print(json.load(open('$f')).get('title','task'))" 2>/dev/null)"
   desc="$(/usr/bin/python3 -c "import json; print(json.load(open('$f')).get('description',''))" 2>/dev/null)"
+  publish="$(/usr/bin/python3 -c "import json; print(json.load(open('$f')).get('publish', True))" 2>/dev/null)"
+  visibility="$(/usr/bin/python3 -c "import json; print(json.load(open('$f')).get('visibility','public'))" 2>/dev/null)"
+  [ "$visibility" = "private" ] && vis_flag="--private" || vis_flag="--public"
 
   slug="$(echo "$title" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g' | cut -c1-50)"
   [ -z "$slug" ] && slug="task"
@@ -78,13 +81,17 @@ PY
       && git add -A \
       && git -c user.email="saieagle@gmail.com" -c user.name="$GH_USER" commit -q -m "Build: $title (via phone task)" ) >> "$LOG" 2>&1
 
-  # 3) Create the GitHub repo and push
+  # 3) Create the GitHub repo and push — only if the task asked to publish
   repo_url=""
-  if ( cd "$dest" && gh repo create "$reponame" --public --source=. --remote=origin --push ) >> "$LOG" 2>&1; then
-    repo_url="https://github.com/$GH_USER/$reponame"
-    log "pushed: $repo_url"
+  if [ "$publish" = "True" ]; then
+    if ( cd "$dest" && gh repo create "$reponame" $vis_flag --source=. --remote=origin --push ) >> "$LOG" 2>&1; then
+      repo_url="https://github.com/$GH_USER/$reponame"
+      log "pushed ($visibility): $repo_url"
+    else
+      log "gh repo create failed for $reponame (folder built locally at $dest)"
+    fi
   else
-    log "gh repo create failed for $reponame (folder built locally at $dest)"
+    log "publish=off — built locally only at $dest"
   fi
 
   # 4) Mark the task done with the link, push status back
@@ -105,8 +112,10 @@ PY
   if [ -n "$repo_url" ]; then
     notify "✅ Done: $slug" "$repo_url"
     log "DONE: $title -> $repo_url"
+  elif [ "$publish" = "True" ]; then
+    notify "⚠️ Built locally: $slug" "Publish failed — see $dest"
   else
-    notify "⚠️ Built locally: $slug" "Push failed — see $dest"
+    notify "✅ Built locally: $slug" "Not published (your choice) — at $dest"
   fi
 done
 
