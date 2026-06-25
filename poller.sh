@@ -97,11 +97,26 @@ for f in tasks/*.json; do
     log "publish=off — local only at $dest"
   fi
 
+  # ---- if it's a published public website, enable GitHub Pages and grab the live URL ----
+  pages_url=""
+  if [ -n "$repo_url" ] && [ "$visibility" != "private" ]; then
+    rname="$(basename "$repo_url")"
+    pages_path=""
+    if [ -f "$dest/index.html" ]; then pages_path="/"
+    elif [ -f "$dest/docs/index.html" ]; then pages_path="/docs"; fi
+    if [ -n "$pages_path" ]; then
+      gh api -X POST "repos/$GH_USER/$rname/pages" -f "source[branch]=main" -f "source[path]=$pages_path" >> "$LOG" 2>&1 || true
+      pages_url="https://$GH_USER.github.io/$rname/"
+      log "pages enabled: $pages_url"
+    fi
+  fi
+
   # ---- mark done (remember folder so the phone can 'Continue') ----
-  setstatus "$f" "status=done" "repo_url=$repo_url" "local_path=$(basename "$dest")"
+  setstatus "$f" "status=done" "repo_url=$repo_url" "local_path=$(basename "$dest")" "pages_url=$pages_url"
   pushstatus "$f" "done: $title"
 
-  if [ -n "$repo_url" ]; then notify "✅ Done: $slug" "$repo_url"; log "DONE: $title -> $repo_url"
+  if [ -n "$pages_url" ]; then notify "🌐 Live: $slug" "$pages_url"; log "DONE: $title -> $pages_url"
+  elif [ -n "$repo_url" ]; then notify "✅ Done: $slug" "$repo_url"; log "DONE: $title -> $repo_url"
   elif [ "$publish" = "True" ]; then notify "⚠️ Built locally: $slug" "Publish failed — $dest"
   else notify "✅ Built locally: $slug" "Not published — $dest"; fi
 done

@@ -160,6 +160,7 @@
       box.innerHTML = items.filter(Boolean).map(t => {
         const m = META[t.status] || { icon:"•", label:t.status||"", color:"#8b949e" };
         const link = t.repo_url ? `<a href="${t.repo_url}" style="color:#3fb950">${t.repo_url.replace('https://github.com/','')}</a>` : "";
+        const live = t.pages_url ? `<a href="${t.pages_url}" style="color:#58a6ff">🌐 ${t.pages_url.replace('https://','')}</a>` : "";
         const safeTitle = (t.title || t.name).replace(/'/g, "\\'");
         const folder = (t.local_path || "").replace(/'/g, "\\'");
         const canContinue = t.status === "done" && folder;
@@ -173,6 +174,7 @@
             </span>
           </div>
           ${link ? `<div style="font-size:12px; margin-top:3px">${link}</div>` : ""}
+          ${live ? `<div style="font-size:12px; margin-top:3px">${live}</div>` : ""}
           <div style="font-size:11px; color:var(--muted); margin-top:2px">${ago(t.created)}</div>
           ${canContinue ? `<button onclick="continueTask('${folder}','${safeTitle}',${t.publish?'true':'false'},'${t.visibility||'public'}')"
             style="margin-top:8px; background:#1f6feb; color:#fff; border:none; border-radius:8px; padding:8px 12px; font-size:13px; font-weight:600; cursor:pointer; width:auto;">💬 Continue working on this</button>` : ""}
