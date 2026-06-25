@@ -60,7 +60,8 @@
       <label for="token">GitHub fine-grained token</label>
       <input id="token" type="password" placeholder="github_pat_..." autocomplete="off">
       <p class="hint">Scoped to <b>srathish/claude-tasks</b> only, with <b>Contents: Read &amp; write</b>. Stored only in this browser — never uploaded.</p>
-      <button id="saveTok" class="btn-link">Save token on this device</button>
+      <button id="saveTok" class="btn-primary">Save token on this device</button>
+      <button id="clearTok" class="btn-link" style="color:var(--danger); border-color:var(--danger);">🗑 Delete saved token</button>
     </div>
   </details>
 </div>
@@ -77,6 +78,13 @@
   // Restore saved token
   const saved = localStorage.getItem(tokenKey);
   if (saved) { $("token").value = saved; $("tokenState").textContent = "✓ saved"; }
+
+  $("clearTok").addEventListener("click", () => {
+    localStorage.removeItem(tokenKey);
+    $("token").value = "";
+    $("tokenState").textContent = "";
+    show("🗑 Saved token deleted. Paste the correct one and tap Save.", "ok");
+  });
 
   $("saveTok").addEventListener("click", () => {
     const t = $("token").value.trim();
