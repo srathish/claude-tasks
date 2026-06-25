@@ -111,24 +111,38 @@
       });
       if (!r.ok) { box.textContent = "Couldn't load tasks."; return; }
       let files = await r.json();
-      files = files.filter(f => f.name.endsWith(".json")).sort((a,b) => b.name.localeCompare(a.name)).slice(0, 8);
+      files = files.filter(f => f.name.endsWith(".json")).sort((a,b) => b.name.localeCompare(a.name)).slice(0, 25);
       if (!files.length) { box.textContent = "No tasks yet."; return; }
       const items = await Promise.all(files.map(async f => {
         try { const c = await (await fetch(f.download_url)).json();
           return { name: f.name, ...c }; } catch { return null; }
       }));
-      const icon = s => s === "done" ? "✅" : s === "received" ? "⏳" : s === "pending" ? "🕓" : "•";
+      const META = {
+        done:     { icon: "✅", label: "done",     color: "#3fb950" },
+        building: { icon: "🔨", label: "building…", color: "#d29922" },
+        received: { icon: "⏳", label: "queued",    color: "#58a6ff" },
+        pending:  { icon: "🕓", label: "waiting",   color: "#8b949e" },
+      };
+      const ago = iso => { if(!iso) return ""; const s=(Date.now()-new Date(iso))/1000;
+        if(s<60) return "just now"; if(s<3600) return Math.floor(s/60)+"m ago";
+        if(s<86400) return Math.floor(s/3600)+"h ago"; return Math.floor(s/86400)+"d ago"; };
       box.innerHTML = items.filter(Boolean).map(t => {
+        const m = META[t.status] || { icon:"•", label:t.status||"", color:"#8b949e" };
         const link = t.repo_url ? `<a href="${t.repo_url}" style="color:#3fb950">${t.repo_url.replace('https://github.com/','')}</a>` : "";
-        return `<div style="padding:8px 0; border-bottom:1px solid var(--border)">
-          <div style="color:var(--text); font-size:14px">${icon(t.status)} ${t.title || t.name}</div>
-          ${link ? `<div style="font-size:12px; margin-top:2px">${link}</div>` : ""}
+        return `<div style="padding:10px 0; border-bottom:1px solid var(--border)">
+          <div style="display:flex; justify-content:space-between; align-items:baseline; gap:8px">
+            <span style="color:var(--text); font-size:14px; font-weight:500">${t.title || t.name}</span>
+            <span style="color:${m.color}; font-size:12px; white-space:nowrap">${m.icon} ${m.label}</span>
+          </div>
+          ${link ? `<div style="font-size:12px; margin-top:3px">${link}</div>` : ""}
+          <div style="font-size:11px; color:var(--muted); margin-top:2px">${ago(t.created)}</div>
         </div>`;
       }).join("");
     } catch (e) { box.textContent = "Error loading tasks."; }
   }
   $("refresh").addEventListener("click", loadRecent);
   loadRecent();
+  setInterval(loadRecent, 15000);  // auto-refresh so statuses update live
 
   $("send").addEventListener("click", async () => {
     const token = ($("token").value || localStorage.getItem(tokenKey) || "").trim();

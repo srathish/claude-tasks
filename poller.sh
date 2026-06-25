@@ -53,6 +53,17 @@ for f in tasks/*.json; do
   log "START build: $dest (from $base)"
   notify "Claude is building: $slug" "Started — I'll ping you when it's done."
 
+  # Push a "building" status so the phone shows it live
+  /usr/bin/python3 - "$f" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p)); d["status"] = "building"
+json.dump(d, open(p, "w"), indent=2)
+PY
+  git add "$f" >> "$LOG" 2>&1
+  git commit -q -m "building: $title" >> "$LOG" 2>&1
+  git push -q origin main >> "$LOG" 2>&1 || log "building-status push failed"
+
   # 1) Build with Claude Code, headless and autonomous
   build_log="$dest/.claude-build.log"
   ( cd "$dest" && claude -p "Read TASK.md in this directory and fully build the project it describes. Create all files here. Add a README.md explaining what it is and how to run it. When finished, stop." \
