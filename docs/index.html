@@ -115,7 +115,7 @@
       if (!files.length) { box.textContent = "No tasks yet."; return; }
       const items = await Promise.all(files.map(async f => {
         try { const c = await (await fetch(f.download_url)).json();
-          return { name: f.name, ...c }; } catch { return null; }
+          return { name: f.name, path: f.path, sha: f.sha, ...c }; } catch { return null; }
       }));
       const META = {
         done:     { icon: "✅", label: "done",     color: "#3fb950" },
@@ -129,10 +129,15 @@
       box.innerHTML = items.filter(Boolean).map(t => {
         const m = META[t.status] || { icon:"•", label:t.status||"", color:"#8b949e" };
         const link = t.repo_url ? `<a href="${t.repo_url}" style="color:#3fb950">${t.repo_url.replace('https://github.com/','')}</a>` : "";
+        const safeTitle = (t.title || t.name).replace(/'/g, "\\'");
         return `<div style="padding:10px 0; border-bottom:1px solid var(--border)">
           <div style="display:flex; justify-content:space-between; align-items:baseline; gap:8px">
             <span style="color:var(--text); font-size:14px; font-weight:500">${t.title || t.name}</span>
-            <span style="color:${m.color}; font-size:12px; white-space:nowrap">${m.icon} ${m.label}</span>
+            <span style="display:flex; align-items:center; gap:10px; white-space:nowrap">
+              <span style="color:${m.color}; font-size:12px">${m.icon} ${m.label}</span>
+              <button onclick="deleteTask('${t.path}','${t.sha}','${safeTitle}')" title="Remove from list"
+                style="background:none; border:none; color:var(--danger); font-size:16px; padding:0 4px; cursor:pointer; width:auto;">🗑</button>
+            </span>
           </div>
           ${link ? `<div style="font-size:12px; margin-top:3px">${link}</div>` : ""}
           <div style="font-size:11px; color:var(--muted); margin-top:2px">${ago(t.created)}</div>
@@ -140,6 +145,23 @@
       }).join("");
     } catch (e) { box.textContent = "Error loading tasks."; }
   }
+  // Delete a task from the list (removes its file from the repo). Needs the token.
+  window.deleteTask = async function(path, sha, title) {
+    const token = localStorage.getItem(tokenKey);
+    if (!token) { show("Add your token in Settings first to delete.", "err"); return; }
+    if (!confirm(`Remove "${title}" from the list?\n\n(This only clears it from here — it does NOT delete the built GitHub repo.)`)) return;
+    show("Deleting…", "ok");
+    try {
+      const res = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/contents/${path}`, {
+        method: "DELETE",
+        headers: { "Authorization": `Bearer ${token}`, "Accept": "application/vnd.github+json" },
+        body: JSON.stringify({ message: `delete: ${title}`, sha, branch: BRANCH })
+      });
+      if (res.ok) { show("🗑 Removed.", "ok"); loadRecent(); }
+      else { const e = await res.json().catch(()=>({})); show("Delete failed: " + (e.message||res.status), "err"); }
+    } catch (err) { show("Delete error: " + err.message, "err"); }
+  };
+
   $("refresh").addEventListener("click", loadRecent);
   loadRecent();
   setInterval(loadRecent, 15000);  // auto-refresh so statuses update live
