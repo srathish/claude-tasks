@@ -1,24 +1,32 @@
 #!/bin/bash
 # Polls srathish/claude-tasks for tasks sent from the phone form.
-# FULLY AUTO mode: for each new "pending" task it
-#   1. creates a project folder + TASK.md
-#   2. runs Claude Code headless to build the project
-#   3. creates a GitHub repo for it and pushes
-#   4. marks the task "done" with the repo URL (pushed back so the phone sees it)
-#   5. notifies you with the GitHub link
+# FULLY AUTO: builds new projects, or CONTINUES existing ones (continue_of),
+# optionally publishes to GitHub, pushes status back, and notifies.
 
 set -uo pipefail
 
 REPO_DIR="/Users/saiyeeshrathish/claude-tasks"        # this repo (the bridge)
-PROJECTS_DIR="/Users/saiyeeshrathish/finding jobs"      # where new project folders are created
+PROJECTS_DIR="/Users/saiyeeshrathish/finding jobs"      # where project folders live
 GH_USER="srathish"
 LOG="$REPO_DIR/poller.log"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"; }
 notify() { /usr/bin/osascript -e "display notification \"$2\" with title \"$1\" sound name \"Glass\"" 2>/dev/null; }
+jget() { /usr/bin/python3 -c "import json; print(json.load(open('$1')).get('$2', '$3'))" 2>/dev/null; }
+setstatus() {  # $1=file $2=key=val pairs via python
+  /usr/bin/python3 - "$1" "$2" "$3" "$4" "$5" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+for kv in sys.argv[2:]:
+    if "=" in kv:
+        k, v = kv.split("=", 1); d[k] = v
+json.dump(d, open(p, "w"), indent=2)
+PY
+}
+pushstatus() { git add "$1" >> "$LOG" 2>&1; git commit -q -m "$2" >> "$LOG" 2>&1; git push -q origin main >> "$LOG" 2>&1 || log "status push failed"; }
 
 cd "$REPO_DIR" || { log "cannot cd to repo"; exit 1; }
-
 git pull --quiet --no-rebase origin main >> "$LOG" 2>&1 || { log "git pull failed"; exit 0; }
 
 shopt -s nullglob
@@ -26,97 +34,76 @@ for f in tasks/*.json; do
   base="$(basename "$f")"
   marker="$REPO_DIR/.processed/$base"
   [ -f "$marker" ] && continue
+  [ "$(jget "$f" status '')" != "pending" ] && { touch "$marker"; continue; }
+  touch "$marker"   # claim immediately
 
-  status="$(/usr/bin/python3 -c "import json; print(json.load(open('$f')).get('status',''))" 2>/dev/null)"
-  [ "$status" != "pending" ] && { touch "$marker"; continue; }
-
-  # Claim it immediately so overlapping runs don't double-build
-  touch "$marker"
-
-  title="$(/usr/bin/python3 -c "import json; print(json.load(open('$f')).get('title','task'))" 2>/dev/null)"
-  desc="$(/usr/bin/python3 -c "import json; print(json.load(open('$f')).get('description',''))" 2>/dev/null)"
-  publish="$(/usr/bin/python3 -c "import json; print(json.load(open('$f')).get('publish', True))" 2>/dev/null)"
-  visibility="$(/usr/bin/python3 -c "import json; print(json.load(open('$f')).get('visibility','public'))" 2>/dev/null)"
+  title="$(jget "$f" title task)"
+  desc="$(jget "$f" description '')"
+  publish="$(jget "$f" publish True)"
+  visibility="$(jget "$f" visibility public)"
+  continue_of="$(jget "$f" continue_of '')"
   [ "$visibility" = "private" ] && vis_flag="--private" || vis_flag="--public"
 
-  slug="$(echo "$title" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g' | cut -c1-50)"
-  [ -z "$slug" ] && slug="task"
-  dest="$PROJECTS_DIR/$slug"
-  reponame="$slug"
-  if [ -e "$dest" ]; then ts="$(date '+%H%M%S')"; dest="${dest}-${ts}"; reponame="${slug}-${ts}"; fi
+  # ---- decide: continue an existing project, or build a new one ----
+  if [ -n "$continue_of" ] && [ -d "$PROJECTS_DIR/$continue_of" ]; then
+    mode="continue"; dest="$PROJECTS_DIR/$continue_of"; slug="$continue_of"
+  else
+    mode="new"
+    slug="$(echo "$title" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g' | cut -c1-50)"
+    [ -z "$slug" ] && slug="task"
+    dest="$PROJECTS_DIR/$slug"; reponame="$slug"
+    if [ -e "$dest" ]; then ts="$(date '+%H%M%S')"; dest="${dest}-${ts}"; reponame="${slug}-${ts}"; fi
+    mkdir -p "$dest"
+    { echo "# $title"; echo; echo "_From phone on $(date '+%Y-%m-%d %H:%M')._"; echo;
+      echo "## What Claude should do"; echo; echo "$desc"; } > "$dest/TASK.md"
+  fi
 
-  mkdir -p "$dest"
-  {
-    echo "# $title"; echo
-    echo "_Task sent from phone on $(date '+%Y-%m-%d %H:%M')._"; echo
-    echo "## What Claude should do"; echo
-    echo "$desc"
-  } > "$dest/TASK.md"
+  log "START $mode: $dest (from $base)"
+  notify "Claude: $slug" "$([ "$mode" = continue ] && echo 'Continuing…' || echo 'Building…')"
+  setstatus "$f" "status=building"; pushstatus "$f" "building: $title"
 
-  log "START build: $dest (from $base)"
-  notify "Claude is building: $slug" "Started — I'll ping you when it's done."
+  # ---- run Claude headless ----
+  if [ "$mode" = "continue" ]; then
+    { echo; echo "## Follow-up ($(date '+%Y-%m-%d %H:%M'))"; echo; echo "$desc"; } >> "$dest/TASK.md"
+    prompt="This project already exists. TASK.md has a new '## Follow-up' section at the bottom. Continue the work per those new instructions. Keep existing files, modify what's needed, update README.md if relevant. When done, stop."
+    ( cd "$dest" && claude --continue -p "$prompt" --dangerously-skip-permissions > .claude-build.log 2>&1 ) \
+      || ( cd "$dest" && claude -p "$prompt" --dangerously-skip-permissions > .claude-build.log 2>&1 )
+  else
+    prompt="Read TASK.md in this directory and fully build the project it describes. Create all files here. Add a README.md explaining what it is and how to run it. When finished, stop."
+    ( cd "$dest" && claude -p "$prompt" --dangerously-skip-permissions > .claude-build.log 2>&1 )
+  fi
+  log "claude finished: $dest"
 
-  # Push a "building" status so the phone shows it live
-  /usr/bin/python3 - "$f" <<'PY'
-import json, sys
-p = sys.argv[1]
-d = json.load(open(p)); d["status"] = "building"
-json.dump(d, open(p, "w"), indent=2)
-PY
-  git add "$f" >> "$LOG" 2>&1
-  git commit -q -m "building: $title" >> "$LOG" 2>&1
-  git push -q origin main >> "$LOG" 2>&1 || log "building-status push failed"
+  # ---- commit the result ----
+  ( cd "$dest" && rm -f .claude-build.log
+    [ -d .git ] || { git init -q && git branch -M main; }
+    git add -A
+    git -c user.email="saieagle@gmail.com" -c user.name="$GH_USER" commit -q -m "$([ "$mode" = continue ] && echo "Continue: $title" || echo "Build: $title")" ) >> "$LOG" 2>&1 || true
 
-  # 1) Build with Claude Code, headless and autonomous
-  build_log="$dest/.claude-build.log"
-  ( cd "$dest" && claude -p "Read TASK.md in this directory and fully build the project it describes. Create all files here. Add a README.md explaining what it is and how to run it. When finished, stop." \
-      --dangerously-skip-permissions > "$build_log" 2>&1 )
-  log "build finished: $dest"
-
-  # 2) Init git + commit the result
-  ( cd "$dest" \
-      && rm -f .claude-build.log \
-      && git init -q \
-      && git branch -M main \
-      && git add -A \
-      && git -c user.email="saieagle@gmail.com" -c user.name="$GH_USER" commit -q -m "Build: $title (via phone task)" ) >> "$LOG" 2>&1
-
-  # 3) Create the GitHub repo and push — only if the task asked to publish
+  # ---- publish / push ----
   repo_url=""
-  if [ "$publish" = "True" ]; then
+  if git -C "$dest" remote get-url origin >/dev/null 2>&1; then
+    if ( cd "$dest" && git push -q origin HEAD:main ) >> "$LOG" 2>&1; then
+      repo_url="$(git -C "$dest" remote get-url origin | sed -E 's#git@github.com:#https://github.com/#; s#\.git$##')"
+      log "pushed updates: $repo_url"
+    fi
+  elif [ "$publish" = "True" ]; then
     if ( cd "$dest" && gh repo create "$reponame" $vis_flag --source=. --remote=origin --push ) >> "$LOG" 2>&1; then
-      repo_url="https://github.com/$GH_USER/$reponame"
-      log "pushed ($visibility): $repo_url"
+      repo_url="https://github.com/$GH_USER/$reponame"; log "published ($visibility): $repo_url"
     else
-      log "gh repo create failed for $reponame (folder built locally at $dest)"
+      log "gh repo create failed for $reponame"
     fi
   else
-    log "publish=off — built locally only at $dest"
+    log "publish=off — local only at $dest"
   fi
 
-  # 4) Mark the task done with the link, push status back
-  /usr/bin/python3 - "$f" "$repo_url" <<'PY'
-import json, sys
-p, url = sys.argv[1], sys.argv[2]
-d = json.load(open(p))
-d["status"] = "done"
-d["repo_url"] = url
-d["local_path"] = sys.argv[0] if False else d.get("local_path","")
-json.dump(d, open(p, "w"), indent=2)
-PY
-  git add "$f" >> "$LOG" 2>&1
-  git commit -q -m "done: $title" >> "$LOG" 2>&1
-  git push -q origin main >> "$LOG" 2>&1 || log "status push failed (retry next run)"
+  # ---- mark done (remember folder so the phone can 'Continue') ----
+  setstatus "$f" "status=done" "repo_url=$repo_url" "local_path=$(basename "$dest")"
+  pushstatus "$f" "done: $title"
 
-  # 5) Ping with the link
-  if [ -n "$repo_url" ]; then
-    notify "✅ Done: $slug" "$repo_url"
-    log "DONE: $title -> $repo_url"
-  elif [ "$publish" = "True" ]; then
-    notify "⚠️ Built locally: $slug" "Publish failed — see $dest"
-  else
-    notify "✅ Built locally: $slug" "Not published (your choice) — at $dest"
-  fi
+  if [ -n "$repo_url" ]; then notify "✅ Done: $slug" "$repo_url"; log "DONE: $title -> $repo_url"
+  elif [ "$publish" = "True" ]; then notify "⚠️ Built locally: $slug" "Publish failed — $dest"
+  else notify "✅ Built locally: $slug" "Not published — $dest"; fi
 done
 
 exit 0

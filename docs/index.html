@@ -122,20 +122,31 @@
     return btoa(unescape(encodeURIComponent(str)));
   }
 
-  // ---- Recent tasks list (reads the public repo, no token needed) ----
+  // ---- Recent tasks list ----
+  const contentCache = {};  // keyed by file sha — only re-fetch when content actually changes
+  function authHeaders(extra) {
+    const t = localStorage.getItem(tokenKey);
+    return Object.assign(t ? { "Authorization": `Bearer ${t}` } : {}, extra || {});
+  }
   async function loadRecent() {
     const box = $("recent");
     try {
       const r = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/contents/tasks?ref=${BRANCH}`, {
-        headers: { "Accept": "application/vnd.github+json" }
+        headers: authHeaders({ "Accept": "application/vnd.github+json" }), cache: "no-store"
       });
-      if (!r.ok) { box.textContent = "Couldn't load tasks."; return; }
+      if (!r.ok) { box.textContent = r.status === 403 ? "Rate-limited — add your token in Settings." : "Couldn't load tasks."; return; }
       let files = await r.json();
       files = files.filter(f => f.name.endsWith(".json")).sort((a,b) => b.name.localeCompare(a.name)).slice(0, 25);
       if (!files.length) { box.textContent = "No tasks yet."; return; }
       const items = await Promise.all(files.map(async f => {
-        try { const c = await (await fetch(f.download_url)).json();
-          return { name: f.name, path: f.path, sha: f.sha, ...c }; } catch { return null; }
+        try {
+          if (!contentCache[f.sha]) {
+            const cr = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/contents/${f.path}?ref=${BRANCH}`,
+              { headers: authHeaders({ "Accept": "application/vnd.github.raw" }), cache: "no-store" });
+            contentCache[f.sha] = JSON.parse(await cr.text());
+          }
+          return { name: f.name, path: f.path, sha: f.sha, ...contentCache[f.sha] };
+        } catch { return null; }
       }));
       const META = {
         done:     { icon: "✅", label: "done",     color: "#3fb950" },
@@ -150,6 +161,8 @@
         const m = META[t.status] || { icon:"•", label:t.status||"", color:"#8b949e" };
         const link = t.repo_url ? `<a href="${t.repo_url}" style="color:#3fb950">${t.repo_url.replace('https://github.com/','')}</a>` : "";
         const safeTitle = (t.title || t.name).replace(/'/g, "\\'");
+        const folder = (t.local_path || "").replace(/'/g, "\\'");
+        const canContinue = t.status === "done" && folder;
         return `<div style="padding:10px 0; border-bottom:1px solid var(--border)">
           <div style="display:flex; justify-content:space-between; align-items:baseline; gap:8px">
             <span style="color:var(--text); font-size:14px; font-weight:500">${t.title || t.name}</span>
@@ -161,6 +174,8 @@
           </div>
           ${link ? `<div style="font-size:12px; margin-top:3px">${link}</div>` : ""}
           <div style="font-size:11px; color:var(--muted); margin-top:2px">${ago(t.created)}</div>
+          ${canContinue ? `<button onclick="continueTask('${folder}','${safeTitle}',${t.publish?'true':'false'},'${t.visibility||'public'}')"
+            style="margin-top:8px; background:#1f6feb; color:#fff; border:none; border-radius:8px; padding:8px 12px; font-size:13px; font-weight:600; cursor:pointer; width:auto;">💬 Continue working on this</button>` : ""}
         </div>`;
       }).join("");
     } catch (e) { box.textContent = "Error loading tasks."; }
@@ -180,6 +195,28 @@
       if (res.ok) { show("🗑 Removed.", "ok"); loadRecent(); }
       else { const e = await res.json().catch(()=>({})); show("Delete failed: " + (e.message||res.status), "err"); }
     } catch (err) { show("Delete error: " + err.message, "err"); }
+  };
+
+  // Ask Claude to keep working on an existing project (from the phone)
+  window.continueTask = async function(folder, title, publish, visibility) {
+    const token = localStorage.getItem(tokenKey);
+    if (!token) { show("Add your token in Settings first.", "err"); return; }
+    const extra = prompt(`What should Claude do next on "${title}"?`);
+    if (!extra || !extra.trim()) return;
+    const now = new Date();
+    const stamp = now.toISOString().slice(0,19).replace(/[:T]/g, "-");
+    const path = `tasks/${stamp}-continue-${folder}.json`;
+    const payload = { title: `${title} (continue)`, description: extra.trim(), created: now.toISOString(),
+                      status: "pending", publish, visibility, continue_of: folder };
+    show("Sending follow-up…", "ok");
+    try {
+      const res = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/contents/${path}`, {
+        method: "PUT", headers: authHeaders({ "Accept": "application/vnd.github+json" }),
+        body: JSON.stringify({ message: `continue: ${title}`, content: b64(JSON.stringify(payload, null, 2)), branch: BRANCH })
+      });
+      if (res.ok) { show("✅ Sent! Claude will continue within a minute.", "ok"); setTimeout(loadRecent, 1500); }
+      else { const e = await res.json().catch(()=>({})); show("Failed: " + (e.message||res.status), "err"); }
+    } catch (err) { show("Error: " + err.message, "err"); }
   };
 
   // Hide visibility picker when not publishing
