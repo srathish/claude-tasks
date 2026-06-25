@@ -46,6 +46,14 @@
     <div id="status"></div>
   </div>
 
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px">
+      <label style="margin:0">Recent tasks</label>
+      <button id="refresh" class="btn-link" style="width:auto; padding:6px 12px; margin:0">↻ Refresh</button>
+    </div>
+    <div id="recent" class="hint">Loading…</div>
+  </div>
+
   <details class="card">
     <summary>⚙️ Settings (one-time setup) <span id="tokenState" class="saved-tag"></span></summary>
     <div style="margin-top:14px">
@@ -94,6 +102,34 @@
     return btoa(unescape(encodeURIComponent(str)));
   }
 
+  // ---- Recent tasks list (reads the public repo, no token needed) ----
+  async function loadRecent() {
+    const box = $("recent");
+    try {
+      const r = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/contents/tasks?ref=${BRANCH}`, {
+        headers: { "Accept": "application/vnd.github+json" }
+      });
+      if (!r.ok) { box.textContent = "Couldn't load tasks."; return; }
+      let files = await r.json();
+      files = files.filter(f => f.name.endsWith(".json")).sort((a,b) => b.name.localeCompare(a.name)).slice(0, 8);
+      if (!files.length) { box.textContent = "No tasks yet."; return; }
+      const items = await Promise.all(files.map(async f => {
+        try { const c = await (await fetch(f.download_url)).json();
+          return { name: f.name, ...c }; } catch { return null; }
+      }));
+      const icon = s => s === "done" ? "✅" : s === "received" ? "⏳" : s === "pending" ? "🕓" : "•";
+      box.innerHTML = items.filter(Boolean).map(t => {
+        const link = t.repo_url ? `<a href="${t.repo_url}" style="color:#3fb950">${t.repo_url.replace('https://github.com/','')}</a>` : "";
+        return `<div style="padding:8px 0; border-bottom:1px solid var(--border)">
+          <div style="color:var(--text); font-size:14px">${icon(t.status)} ${t.title || t.name}</div>
+          ${link ? `<div style="font-size:12px; margin-top:2px">${link}</div>` : ""}
+        </div>`;
+      }).join("");
+    } catch (e) { box.textContent = "Error loading tasks."; }
+  }
+  $("refresh").addEventListener("click", loadRecent);
+  loadRecent();
+
   $("send").addEventListener("click", async () => {
     const token = ($("token").value || localStorage.getItem(tokenKey) || "").trim();
     const title = $("title").value.trim();
@@ -119,6 +155,7 @@
       if (res.ok) {
         show("✅ Sent! Your laptop will pick this up within a minute.", "ok");
         $("title").value = ""; $("desc").value = "";
+        setTimeout(loadRecent, 1500);
       } else {
         const e = await res.json().catch(() => ({}));
         show("❌ Failed: " + (e.message || res.status) + "\nCheck the token has Contents: write on this repo.", "err");

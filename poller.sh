@@ -1,73 +1,102 @@
 #!/bin/bash
-# Polls srathish/claude-tasks for new tasks sent from the phone form.
-# For each new "pending" task: creates a project folder, drops in TASK.md,
-# marks the task "received" (pushed back so the phone sees it), and notifies.
-# Mode: prepare + notify (you open Claude Code to actually build it).
+# Polls srathish/claude-tasks for tasks sent from the phone form.
+# FULLY AUTO mode: for each new "pending" task it
+#   1. creates a project folder + TASK.md
+#   2. runs Claude Code headless to build the project
+#   3. creates a GitHub repo for it and pushes
+#   4. marks the task "done" with the repo URL (pushed back so the phone sees it)
+#   5. notifies you with the GitHub link
 
 set -uo pipefail
 
 REPO_DIR="/Users/saiyeeshrathish/claude-tasks"        # this repo (the bridge)
 PROJECTS_DIR="/Users/saiyeeshrathish/finding jobs"      # where new project folders are created
+GH_USER="srathish"
 LOG="$REPO_DIR/poller.log"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"; }
+notify() { /usr/bin/osascript -e "display notification \"$2\" with title \"$1\" sound name \"Glass\"" 2>/dev/null; }
 
 cd "$REPO_DIR" || { log "cannot cd to repo"; exit 1; }
 
-# Pull latest tasks from GitHub
 git pull --quiet --no-rebase origin main >> "$LOG" 2>&1 || { log "git pull failed"; exit 0; }
 
 shopt -s nullglob
-new_count=0
-
 for f in tasks/*.json; do
   base="$(basename "$f")"
   marker="$REPO_DIR/.processed/$base"
-  [ -f "$marker" ] && continue   # already handled locally
+  [ -f "$marker" ] && continue
 
-  status="$(/usr/bin/python3 -c "import json,sys; print(json.load(open('$f')).get('status',''))" 2>/dev/null)"
+  status="$(/usr/bin/python3 -c "import json; print(json.load(open('$f')).get('status',''))" 2>/dev/null)"
   [ "$status" != "pending" ] && { touch "$marker"; continue; }
+
+  # Claim it immediately so overlapping runs don't double-build
+  touch "$marker"
 
   title="$(/usr/bin/python3 -c "import json; print(json.load(open('$f')).get('title','task'))" 2>/dev/null)"
   desc="$(/usr/bin/python3 -c "import json; print(json.load(open('$f')).get('description',''))" 2>/dev/null)"
 
-  # slugify the title for a folder name
   slug="$(echo "$title" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g' | cut -c1-50)"
   [ -z "$slug" ] && slug="task"
   dest="$PROJECTS_DIR/$slug"
-  # avoid clobbering an existing folder
-  if [ -e "$dest" ]; then dest="${dest}-$(date '+%H%M%S')"; fi
+  reponame="$slug"
+  if [ -e "$dest" ]; then ts="$(date '+%H%M%S')"; dest="${dest}-${ts}"; reponame="${slug}-${ts}"; fi
 
   mkdir -p "$dest"
   {
-    echo "# $title"
-    echo
-    echo "_Task sent from phone on $(date '+%Y-%m-%d %H:%M')._"
-    echo
-    echo "## What Claude should do"
-    echo
+    echo "# $title"; echo
+    echo "_Task sent from phone on $(date '+%Y-%m-%d %H:%M')._"; echo
+    echo "## What Claude should do"; echo
     echo "$desc"
   } > "$dest/TASK.md"
 
-  log "created project: $dest (from $base)"
-  touch "$marker"
-  new_count=$((new_count+1))
+  log "START build: $dest (from $base)"
+  notify "Claude is building: $slug" "Started — I'll ping you when it's done."
 
-  # Mark the task received in the repo so the phone can see status
-  /usr/bin/python3 - "$f" <<'PY'
+  # 1) Build with Claude Code, headless and autonomous
+  build_log="$dest/.claude-build.log"
+  ( cd "$dest" && claude -p "Read TASK.md in this directory and fully build the project it describes. Create all files here. Add a README.md explaining what it is and how to run it. When finished, stop." \
+      --dangerously-skip-permissions > "$build_log" 2>&1 )
+  log "build finished: $dest"
+
+  # 2) Init git + commit the result
+  ( cd "$dest" \
+      && rm -f .claude-build.log \
+      && git init -q \
+      && git branch -M main \
+      && git add -A \
+      && git -c user.email="saieagle@gmail.com" -c user.name="$GH_USER" commit -q -m "Build: $title (via phone task)" ) >> "$LOG" 2>&1
+
+  # 3) Create the GitHub repo and push
+  repo_url=""
+  if ( cd "$dest" && gh repo create "$reponame" --public --source=. --remote=origin --push ) >> "$LOG" 2>&1; then
+    repo_url="https://github.com/$GH_USER/$reponame"
+    log "pushed: $repo_url"
+  else
+    log "gh repo create failed for $reponame (folder built locally at $dest)"
+  fi
+
+  # 4) Mark the task done with the link, push status back
+  /usr/bin/python3 - "$f" "$repo_url" <<'PY'
 import json, sys
-p = sys.argv[1]
+p, url = sys.argv[1], sys.argv[2]
 d = json.load(open(p))
-d["status"] = "received"
+d["status"] = "done"
+d["repo_url"] = url
+d["local_path"] = sys.argv[0] if False else d.get("local_path","")
 json.dump(d, open(p, "w"), indent=2)
 PY
   git add "$f" >> "$LOG" 2>&1
-  git commit -q -m "received: $title" >> "$LOG" 2>&1
-  git push -q origin main >> "$LOG" 2>&1 || log "push of status failed (will retry next run)"
+  git commit -q -m "done: $title" >> "$LOG" 2>&1
+  git push -q origin main >> "$LOG" 2>&1 || log "status push failed (retry next run)"
 
-  # macOS notification
-  /usr/bin/osascript -e "display notification \"$title\" with title \"New task → ${slug}\" sound name \"Glass\"" 2>/dev/null
+  # 5) Ping with the link
+  if [ -n "$repo_url" ]; then
+    notify "✅ Done: $slug" "$repo_url"
+    log "DONE: $title -> $repo_url"
+  else
+    notify "⚠️ Built locally: $slug" "Push failed — see $dest"
+  fi
 done
 
-[ "$new_count" -gt 0 ] && log "done: $new_count new task(s)"
 exit 0
