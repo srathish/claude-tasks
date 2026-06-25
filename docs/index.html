@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0d1117">
+<title>Send a task to Claude</title>
+<style>
+  :root { --bg:#0d1117; --card:#161b22; --border:#30363d; --text:#e6edf3; --muted:#8b949e; --accent:#238636; --accent2:#2ea043; --danger:#f85149; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; padding:max(16px,env(safe-area-inset-top)) 16px max(16px,env(safe-area-inset-bottom)); -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:520px; margin:0 auto; }
+  h1 { font-size:22px; margin:8px 0 4px; }
+  .sub { color:var(--muted); font-size:14px; margin:0 0 20px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:16px; margin-bottom:16px; }
+  label { display:block; font-size:13px; font-weight:600; margin:0 0 6px; color:var(--text); }
+  .hint { font-size:12px; color:var(--muted); margin:4px 0 0; }
+  input, textarea { width:100%; background:#0d1117; border:1px solid var(--border); border-radius:10px; color:var(--text); padding:12px; font-size:16px; font-family:inherit; margin-bottom:14px; }
+  input:focus, textarea:focus { outline:none; border-color:var(--accent2); }
+  textarea { min-height:120px; resize:vertical; }
+  button { width:100%; border:none; border-radius:10px; padding:14px; font-size:16px; font-weight:600; cursor:pointer; }
+  .btn-primary { background:var(--accent); color:#fff; }
+  .btn-primary:active { background:var(--accent2); }
+  .btn-primary:disabled { opacity:.5; }
+  .btn-link { background:transparent; color:var(--muted); border:1px solid var(--border); margin-top:8px; }
+  details summary { cursor:pointer; color:var(--muted); font-size:13px; font-weight:600; }
+  #status { font-size:14px; padding:12px; border-radius:10px; margin-top:4px; display:none; white-space:pre-wrap; }
+  .ok { background:rgba(46,160,67,.15); color:#3fb950; border:1px solid rgba(46,160,67,.4); }
+  .err { background:rgba(248,81,73,.12); color:#ff7b72; border:1px solid rgba(248,81,73,.4); }
+  .saved-tag { font-size:12px; color:#3fb950; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🤖 Send a task to Claude</h1>
+  <p class="sub">Describe what you want built. Your laptop picks it up and Claude gets to work.</p>
+
+  <div class="card">
+    <label for="title">Project / task name</label>
+    <input id="title" placeholder="e.g. CLI todo app in Python" autocomplete="off">
+
+    <label for="desc">What should Claude do?</label>
+    <textarea id="desc" placeholder="Describe the project. Be specific: language, features, anything Claude should know."></textarea>
+
+    <button id="send" class="btn-primary">Send to laptop</button>
+    <div id="status"></div>
+  </div>
+
+  <details class="card">
+    <summary>⚙️ Settings (one-time setup) <span id="tokenState" class="saved-tag"></span></summary>
+    <div style="margin-top:14px">
+      <label for="token">GitHub fine-grained token</label>
+      <input id="token" type="password" placeholder="github_pat_..." autocomplete="off">
+      <p class="hint">Scoped to <b>srathish/claude-tasks</b> only, with <b>Contents: Read &amp; write</b>. Stored only in this browser — never uploaded.</p>
+      <button id="saveTok" class="btn-link">Save token on this device</button>
+    </div>
+  </details>
+</div>
+
+<script>
+  // === Config: which repo the tasks are committed to ===
+  const OWNER = "srathish";
+  const REPO  = "claude-tasks";
+  const BRANCH = "main";
+
+  const $ = id => document.getElementById(id);
+  const tokenKey = "claude_tasks_token";
+
+  // Restore saved token
+  const saved = localStorage.getItem(tokenKey);
+  if (saved) { $("token").value = saved; $("tokenState").textContent = "✓ saved"; }
+
+  $("saveTok").addEventListener("click", () => {
+    const t = $("token").value.trim();
+    if (!t) { localStorage.removeItem(tokenKey); $("tokenState").textContent = ""; return; }
+    localStorage.setItem(tokenKey, t);
+    $("tokenState").textContent = "✓ saved";
+    show("Token saved on this device.", "ok");
+  });
+
+  function show(msg, kind) {
+    const s = $("status");
+    s.textContent = msg;
+    s.className = kind;
+    s.style.display = "block";
+  }
+
+  function slugify(s) {
+    return s.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 50) || "task";
+  }
+
+  // UTF-8 safe base64
+  function b64(str) {
+    return btoa(unescape(encodeURIComponent(str)));
+  }
+
+  $("send").addEventListener("click", async () => {
+    const token = ($("token").value || localStorage.getItem(tokenKey) || "").trim();
+    const title = $("title").value.trim();
+    const desc  = $("desc").value.trim();
+
+    if (!token) { show("No token yet. Open Settings below and paste your GitHub token.", "err"); return; }
+    if (!title) { show("Give the task a name.", "err"); return; }
+
+    const now = new Date();
+    const stamp = now.toISOString().slice(0,19).replace(/[:T]/g, "-");
+    const path = `tasks/${stamp}-${slugify(title)}.json`;
+    const payload = { title, description: desc, created: now.toISOString(), status: "pending" };
+    const content = b64(JSON.stringify(payload, null, 2));
+
+    $("send").disabled = true;
+    show("Sending…", "ok");
+    try {
+      const res = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/contents/${path}`, {
+        method: "PUT",
+        headers: { "Authorization": `Bearer ${token}`, "Accept": "application/vnd.github+json" },
+        body: JSON.stringify({ message: `task: ${title}`, content, branch: BRANCH })
+      });
+      if (res.ok) {
+        show("✅ Sent! Your laptop will pick this up within a minute.", "ok");
+        $("title").value = ""; $("desc").value = "";
+      } else {
+        const e = await res.json().catch(() => ({}));
+        show("❌ Failed: " + (e.message || res.status) + "\nCheck the token has Contents: write on this repo.", "err");
+      }
+    } catch (err) {
+      show("❌ Network error: " + err.message, "err");
+    } finally {
+      $("send").disabled = false;
+    }
+  });
+</script>
+</body>
+</html>
