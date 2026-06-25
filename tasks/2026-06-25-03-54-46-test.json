@@ -2,7 +2,9 @@
   "title": "Test",
   "description": "This is a test project create hello world",
   "created": "2026-06-25T03:54:46.929Z",
-  "status": "building",
+  "status": "done",
   "publish": false,
-  "visibility": "public"
+  "visibility": "public",
+  "repo_url": "",
+  "local_path": ""
 }
