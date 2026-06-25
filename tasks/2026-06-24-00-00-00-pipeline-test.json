@@ -1,8 +1,0 @@
-{
-  "title": "pipeline test hello",
-  "description": "Create a single file hello.sh that prints 'pipeline works'. Keep it minimal.",
-  "created": "2026-06-24T00:00:00.000Z",
-  "status": "done",
-  "repo_url": "https://github.com/srathish/pipeline-test-hello",
-  "local_path": ""
-}
